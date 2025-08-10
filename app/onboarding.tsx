@@ -1,12 +1,12 @@
 import { useState } from 'react';
-import { View, Text, TextInput, Button, StyleSheet, Alert, Image, Pressable } from 'react-native';
+import { View, Text, TextInput, Button, StyleSheet, Alert, Image, Pressable, ActivityIndicator } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { useAuth } from '@/providers/AuthProvider';
 import { supabase } from '@/lib/supabase';
 import * as ImagePicker from 'expo-image-picker';
 import { decode } from 'base64-arraybuffer';
 
-// Fitness options as constants
+// Constants for form options
 const FITNESS_INTERESTS = ['Weightlifting', 'Running', 'Yoga', 'Boxing', 'Swimming', 'CrossFit', 'Calisthenics'];
 const FITNESS_GOALS = ['Build Muscle', 'Lose Weight', 'Increase Strength', 'Improve Endurance', 'General Fitness'];
 const WORKOUT_FREQUENCY = ['1-2 times/week', '3-4 times/week', '5+ times/week'];
@@ -16,8 +16,10 @@ export default function OnboardingScreen() {
   const router = useRouter();
 
   const [step, setStep] = useState(1);
+  const [loading, setLoading] = useState(false);
 
-  // Form state
+  // Form state including the new username field
+  const [username, setUsername] = useState('');
   const [height, setHeight] = useState('');
   const [weight, setWeight] = useState('');
   const [interests, setInterests] = useState<string[]>([]);
@@ -27,9 +29,8 @@ export default function OnboardingScreen() {
   const [image, setImage] = useState<string | null>(null);
   const [bio, setBio] = useState('');
 
-  const [loading, setLoading] = useState(false);
-
   const onNext = () => {
+    // Add validation here if needed, e.g., check if fields are empty
     if (step < 3) {
       setStep(step + 1);
     } else {
@@ -50,10 +51,9 @@ export default function OnboardingScreen() {
   };
 
   const pickImage = async () => {
-    // Request camera roll permissions
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert('Sorry, we need camera roll permissions to make this work!');
+      Alert.alert('Permission needed', 'Sorry, we need camera roll permissions to make this work!');
       return;
     }
 
@@ -62,50 +62,47 @@ export default function OnboardingScreen() {
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.5,
-      base64: true, // Ask for base64 representation
+      base64: true,
     });
 
-    if (!result.canceled && result.assets && result.assets[0].base64) {
-        // The image is now in base64 format, ready for upload
-        const base64 = result.assets[0].base64;
-        setImage(`data:image/jpeg;base64,${base64}`);
+    if (!result.canceled && result.assets[0].base64) {
+      setImage(`data:image/jpeg;base64,${result.assets[0].base64}`);
     }
   };
 
-
   const onSubmit = async () => {
     if (!session) return;
+    if (!username.trim()) {
+        Alert.alert('Validation Error', 'Please enter a username.');
+        return;
+    }
     setLoading(true);
     try {
-        let avatarUrl = '';
-        if (image) {
-            const match = image.match(/^data:image\/(png|jpeg|jpg);base64,(.*)$/);
-            const base64Data = match ? match[2] : null;
-            const fileExt = match ? match[1] : 'jpg';
-            
-            if (!base64Data) {
-              // This can happen if the URI is a local file path instead of a data URI
-              // A more robust solution would handle file-to-base64 conversion here
-              throw new Error("Could not extract image data. Please select the image again.");
-            }
+      let avatarUrl = '';
+      if (image) {
+        const match = image.match(/^data:image\/(png|jpeg|jpg);base64,(.*)$/);
+        if (!match) throw new Error('Invalid image format.');
+        
+        const base64Data = match[2];
+        const fileExt = match[1];
+        const filePath = `${session.user.id}.${fileExt}`;
 
-            const filePath = `${session.user.id}.${fileExt}`;
+        const { error: uploadError } = await supabase.storage
+          .from('avatars')
+          .upload(filePath, decode(base64Data), {
+            contentType: `image/${fileExt}`,
+            upsert: true,
+          });
 
-            const { error: uploadError } = await supabase.storage
-                .from('avatars')
-                .upload(filePath, decode(base64Data), {
-                    contentType: `image/${fileExt}`,
-                    upsert: true, // Overwrite file if it exists
-                });
+        if (uploadError) throw uploadError;
 
-            if (uploadError) throw uploadError;
-
-            const { data } = supabase.storage.from('avatars').getPublicUrl(filePath);
-            avatarUrl = data.publicUrl;
-        }
+        const { data } = supabase.storage.from('avatars').getPublicUrl(filePath);
+        avatarUrl = data.publicUrl;
+      }
 
       const { error } = await supabase.from('profiles').upsert({
         id: session.user.id,
+        username, // Use the state variable
         height,
         weight,
         fitness_interests: interests,
@@ -114,26 +111,32 @@ export default function OnboardingScreen() {
         city,
         avatar_url: avatarUrl,
         bio,
-        username: session.user.email?.split('@')[0], // A default username
         updated_at: new Date().toISOString(),
       });
 
       if (error) throw error;
-      
-      router.replace('/(tabs)/');
 
+      router.replace('/(tabs)/');
     } catch (error: any) {
-      Alert.alert('Error completing profile', error.message);
+      Alert.alert('Error', error.message);
     } finally {
       setLoading(false);
     }
   };
 
+  if (loading) {
+    return (
+      <View style={styles.centerContainer}>
+        <ActivityIndicator size="large" />
+        <Text>Creating your profile...</Text>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <Stack.Screen options={{ title: `Step ${step} of 3` }} />
 
-      {/* STEP 1 */}
       {step === 1 && (
         <View style={styles.stepContainer}>
           <Text style={styles.title}>Core Stats</Text>
@@ -142,11 +145,9 @@ export default function OnboardingScreen() {
         </View>
       )}
 
-      {/* STEP 2 */}
       {step === 2 && (
         <View style={styles.stepContainer}>
           <Text style={styles.title}>Fitness Details</Text>
-          
           <Text style={styles.label}>Interests (select at least one)</Text>
           <View style={styles.choicesContainer}>
             {FITNESS_INTERESTS.map(item => (
@@ -155,7 +156,6 @@ export default function OnboardingScreen() {
               </Pressable>
             ))}
           </View>
-          
           <Text style={styles.label}>Primary Goal</Text>
           <View style={styles.choicesContainer}>
             {FITNESS_GOALS.map(item => (
@@ -164,9 +164,8 @@ export default function OnboardingScreen() {
               </Pressable>
             ))}
           </View>
-          
           <Text style={styles.label}>Workout Frequency</Text>
-           <View style={styles.choicesContainer}>
+          <View style={styles.choicesContainer}>
             {WORKOUT_FREQUENCY.map(item => (
               <Pressable key={item} onPress={() => setFrequency(item)} style={[styles.choiceChip, frequency === item && styles.choiceChipSelected]}>
                 <Text style={[styles.choiceText, frequency === item && styles.choiceTextSelected]}>{item}</Text>
@@ -176,34 +175,37 @@ export default function OnboardingScreen() {
         </View>
       )}
 
-      {/* STEP 3 */}
       {step === 3 && (
         <View style={styles.stepContainer}>
           <Text style={styles.title}>Personalization</Text>
           <Pressable onPress={pickImage} style={styles.avatarPicker}>
             {image ? <Image source={{ uri: image }} style={styles.avatar} /> : <Text>Select Photo</Text>}
           </Pressable>
+          <TextInput placeholder="Username" value={username} onChangeText={setUsername} style={styles.input} autoCapitalize="none" />
           <TextInput placeholder="City" value={city} onChangeText={setCity} style={styles.input} />
           <TextInput placeholder="Short Bio (max 150 chars)" value={bio} onChangeText={setBio} style={styles.input} maxLength={150} multiline />
         </View>
       )}
 
-      {/* NAVIGATION BUTTONS */}
       <View style={styles.buttonContainer}>
-        {step > 1 && <Button title="Back" onPress={onBack} disabled={loading} />}
+        {step > 1 && <Button title="Back" onPress={onBack} />}
         <View style={{ flex: 1 }} />
-        <Button title={step === 3 ? "Finish" : "Next"} onPress={onNext} disabled={loading} />
+        <Button title={step === 3 ? "Finish" : "Next"} onPress={onNext} />
       </View>
     </View>
   );
 }
 
-// STYLES
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     padding: 20,
     backgroundColor: '#fff',
+  },
+  centerContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   stepContainer: {
     flex: 1,
@@ -248,7 +250,7 @@ const styles = StyleSheet.create({
     color: '#000',
   },
   choiceTextSelected: {
-      color: '#fff',
+    color: '#fff',
   },
   avatarPicker: {
     width: 100,
